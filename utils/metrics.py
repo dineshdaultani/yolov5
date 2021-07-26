@@ -7,13 +7,65 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from ignite.metrics import Metric
+from ignite.exceptions import NotComputableError
+# These decorators helps with distributed settings
+from ignite.metrics.metric import sync_all_reduce, reinit__is_reduced
 
+class CustomAccuracy(Metric):
+    """
+    Reference: https://pytorch.org/ignite/metrics.html#how-to-create-a-custom-metric
+    """
+    def __init__(self, nc, conf=0.25, iou_thres=0.45,
+                 output_transform=lambda x: x, device="cpu"):
+        self._num_correct = None
+        self._num_examples = None
+        self.nc = nc  # number of classes
+        self.conf = conf
+        self.iou_thres = iou_thres
+        self.matrix = None
+        self.confusion_matrix = ConfusionMatrix(nc=self.nc, conf=self.conf, 
+                                                iou_thres=self.iou_thres)
+        super(CustomAccuracy, self).__init__(output_transform=output_transform, device=device)
+
+    @reinit__is_reduced
+    def reset(self):
+        self._num_correct = torch.tensor(0, device=self._device)
+        self._num_examples = 0
+        self.nc = 0
+        super(CustomAccuracy, self).reset()
+
+    @reinit__is_reduced
+    def update(self, y_pred, y_true):
+        """
+        Creating wrapper of ConfusionMatrix since that class already contains
+        values that we need to calculate accuracy
+        Arguments:
+            y_pred (Array[N, 6]), x1, y1, x2, y2, conf, class
+            y_true (Array[M, 5]), class, x1, y1, x2, y2
+        """
+        self.confusion_matrix.process_batch(y_pred, y_true)
+        self.matrix = self.confusion_matrix.matrix
+        
+    @sync_all_reduce("matrix")
+    def compute(self):
+        """
+        Function to calculate accuracy based on the below formula
+        Accuracy = (TP + TN) / (P + N)
+        (TP + TN) could be represented as diagonal elements
+        (P + N) could be represented as all elements
+        # Reference: https://en.wikipedia.org/wiki/Confusion_matrix
+        Returns: 
+            Accuracy based on the confusion matrix values
+        """
+        diagonal_sum = np.sum(np.diagonal(self.matrix)) 
+        total_sum = np.sum(self.matrix)
+        return (diagonal_sum / total_sum) * 100
 
 def fitness(x):
     # Model fitness as a weighted combination of metrics
-    w = [0.0, 0.0, 0.1, 0.9]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
-    return (x[:, :4] * w).sum(1)
-
+    w = [0.0, 0.0, 0.1, 0.8, 0.1]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95, accuracy]
+    return (x[:, :5] * w).sum(1)
 
 def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names=()):
     """ Compute the average precision, given the recall and precision curves.
@@ -76,7 +128,6 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names
 
     i = f1.mean(0).argmax()  # max F1 index
     return p[:, i], r[:, i], ap, f1[:, i], unique_classes.astype('int32')
-
 
 def compute_ap(recall, precision):
     """ Compute the average precision, given the recall and precision curves
@@ -177,7 +228,7 @@ class ConfusionMatrix:
             fig.savefig(Path(save_dir) / 'confusion_matrix.png', dpi=250)
         except Exception as e:
             print(f'WARNING: ConfusionMatrix plot failure: {e}')
-
+ 
     def print(self):
         for i in range(self.nc + 1):
             print(' '.join(map(str, self.matrix[i])))

@@ -12,6 +12,17 @@ RUN pip install --no-cache -r requirements.txt coremltools onnx gsutil notebook
 RUN pip install --no-cache -U torch torchvision numpy
 # RUN pip install --no-cache torch==1.9.0+cu111 torchvision==0.10.0+cu111 -f https://download.pytorch.org/whl/torch_stable.html
 
+# # Custom changes to run the script on GTX 2080 Ti Nvidia GPUs
+# RUN conda create --name ab_env
+# SHELL ["/bin/bash", "-c"]
+# RUN source activate ab_env && \
+# #	pip install -r requirements.txt && \
+# 	conda install pytorch==1.7.1 torchvision==0.8.2 cudatoolkit=10.1 -c pytorch && \
+# 	pip install ipython ipykernel && \
+# 	ipython kernel install --name "ab_env" --user && \
+#  	pip install -r requirements.txt && \
+# 	pip install IProgress ipywidgets
+
 # Create working directory
 RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app
@@ -21,7 +32,6 @@ COPY . /usr/src/app
 
 # Set environment variables
 ENV HOME=/usr/src/app
-
 
 # Usage Examples -------------------------------------------------------------------------------------------------------
 
