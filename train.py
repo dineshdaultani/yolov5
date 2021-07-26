@@ -66,6 +66,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     wdir = save_dir / 'weights'
     wdir.mkdir(parents=True, exist_ok=True)  # make dir
     last = wdir / 'last.pt'
+    best_acc =  wdir / 'best_accuracy.pt'
     best = wdir / 'best.pt'
     results_file = save_dir / 'results.txt'
 
@@ -177,7 +178,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     ema = ModelEMA(model) if RANK in [-1, 0] else None
 
     # Resume
-    start_epoch, best_fitness = 0, 0.0
+    start_epoch, best_fitness, best_custom_acc = 0, 0.0, 0.0
     if pretrained:
         # Optimizer
         if ckpt['optimizer'] is not None:
@@ -400,11 +401,11 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
             # Write
             with open(results_file, 'a') as f:
-                f.write(s + '%10.4g' * 7 % results + '\n')  # append metrics, val_loss
+                f.write(s + '%10.4g' * 8 % results + '\n')  # append metrics, val_loss
 
             # Log
             tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
-                    'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
+                    'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95', 'metrics/custom_acc'
                     'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
                     'x/lr0', 'x/lr1', 'x/lr2']  # params
             for x, tag in zip(list(mloss[:-1]) + list(results) + lr, tags):
@@ -412,9 +413,14 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     loggers['tb'].add_scalar(tag, x, epoch)  # TensorBoard
                 if loggers['wandb']:
                     wandb_logger.log({tag: x})  # W&B
-
+            
+            # Update best accuracy 
+            custom_acc = results[4]
+            if custom_acc > best_custom_acc:
+                best_custom_acc = custom_acc
+                
             # Update best mAP
-            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95, ACC]
             if fi > best_fitness:
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
@@ -423,6 +429,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if (not nosave) or (final_epoch and not evolve):  # if save
                 ckpt = {'epoch': epoch,
                         'best_fitness': best_fitness,
+                        'best_custom_acc': best_custom_acc,
                         'training_results': results_file.read_text(),
                         'model': deepcopy(de_parallel(model)).half(),
                         'ema': deepcopy(ema.ema).half(),
@@ -432,6 +439,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
                 # Save last, best and delete
                 torch.save(ckpt, last)
+                # Save best custom accuracy model
+                if best_custom_acc == custom_acc:
+                    print('Saving best accuracy model with accuracy', round(custom_acc, 2), '%!')
+                    torch.save(ckpt, best_acc)
                 if best_fitness == fi:
                     torch.save(ckpt, best)
                 if loggers['wandb']:
